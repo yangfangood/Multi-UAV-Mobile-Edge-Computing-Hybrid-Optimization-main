@@ -1,0 +1,25 @@
+# 1. Python 缓存文件
+__pycache__/
+*.py[cod]
+*.so
+
+# 2. 虚拟环境（本地独有，服务器不需要）
+venv/
+env/
+.venv/
+
+# 3. IDE 配置（每个人的配置可能不同）
+.vscode/
+.idea/
+*.swp
+
+# 4. 项目生成的结果文件（避免打包进去）
+results/
+outputs/
+*.png
+*.jpg
+
+# 5. 日志与压缩包
+*.log
+*.zip
+*.tar.gz
