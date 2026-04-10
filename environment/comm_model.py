@@ -1,12 +1,39 @@
 import config
 import numpy as np
-
+import math
 # 计算信道增益 信号在空间中传播时会衰减。距离越远，信号越弱。
-def calculate_channel_gain(pos1: np.ndarray, pos2: np.ndarray) -> float:
-    """Calculates channel gain based on the free-space path loss model.根据自由空间路径损耗模型来计算信道增益。
-    距离增加一倍，增益降到1/4。这就是为什么无人机要尽量靠近用户！"""
-    distance_sq: float = np.sum((pos1 - pos2) ** 2) # 计算距离平方
-    return (config.G_CONSTS_PRODUCT) / (distance_sq + config.EPSILON)
+#def calculate_channel_gain(pos1: np.ndarray, pos2: np.ndarray) -> float:
+#    """Calculates channel gain based on the free-space path loss model.根据自由空间路径损耗模型来计算信道增益。
+#    距离增加一倍，增益降到1/4。这就是为什么无人机要尽量靠近用户！"""
+#    distance_sq: float = np.sum((pos1 - pos2) ** 2) # 计算距离平方
+#    return (config.G_CONSTS_PRODUCT) / (distance_sq + config.EPSILON)
+def calculate_channel_gain(uav_pos: np.ndarray, ue_pos: np.ndarray) -> float:
+    """Calculates channel gain using a probabilistic G2A path loss model."""
+    # 1. 计算距离和仰角
+    horizontal_dist = np.linalg.norm(uav_pos[:2] - ue_pos[:2])
+    vertical_dist = abs(uav_pos[2] - ue_pos[2])
+    distance = np.linalg.norm(uav_pos - ue_pos)
+    elevation_angle = math.atan2(vertical_dist, horizontal_dist) * 180 / math.pi
+
+    # 2. 计算视距传输概率
+    # 这里的公式是一个示例，你需要根据参考文献选择适合你场景的模型
+    p_los = 1 / (1 + config.LOS_A * math.exp(-config.LOS_B * (elevation_angle - config.LOS_A)))
+    p_nlos = 1 - p_los
+
+    # 3. 计算两种状态下的路径损耗 (dB)
+    path_loss_los_db = (10 * config.PATH_LOSS_EXP_LOS * math.log10(distance) +
+                        20 * math.log10((4 * math.pi * distance * config.CARRIER_FREQUENCY) / 3e8) +
+                        config.ETA_LOS)
+    path_loss_nlos_db = (10 * config.PATH_LOSS_EXP_NLOS * math.log10(distance) +
+                         20 * math.log10((4 * math.pi * distance * config.CARRIER_FREQUENCY) / 3e8) +
+                         config.ETA_NLOS)
+
+    # 4. 加权平均得到最终的路径损耗
+    avg_path_loss_db = p_los * path_loss_los_db + p_nlos * path_loss_nlos_db
+
+    # 5. 将dB值转换为线性增益
+    channel_gain_linear = 10 ** (-avg_path_loss_db / 10)
+    return channel_gain_linear
 
 # 计算信噪比  信号功率 vs 噪声功率。信噪比越高，通信质量越好。
 # 信号很强 + 噪声很弱 → SNR高 → 通信质量好

@@ -71,6 +71,7 @@ class AttentionActorBase(nn.Module):
 
     def __init__(self, obs_dim: int) -> None:
         super().__init__()
+
         self.num_neighbors: int = config.MAX_UAV_NEIGHBORS
         self.neighbor_obs_dim: int = config.NEIGHBOR_OBS_DIM
         self.num_ues: int = config.MAX_ASSOCIATED_UES
@@ -82,7 +83,10 @@ class AttentionActorBase(nn.Module):
         self.neighbor_block_size: int = self.num_neighbors * self.neighbor_obs_dim
         self.ue_block_size: int = self.num_ues * self.ue_obs_dim
         self.own_dim: int = obs_dim - self.neighbor_block_size - self.ue_block_size
-
+        print(f"AttentionActorBase __init__: received obs_dim = {obs_dim}")
+        # ... 计算 own_dim 等
+        print(
+            f"own_dim = {self.own_dim}, neighbor_block_size = {self.neighbor_block_size}, ue_block_size = {self.ue_block_size}")
         # Feature Encoders (The "Embedding" Layers)
         # These project raw inputs (x, y, battery) into the shared hidden_dim
         # nn.Linear instead of nn.Embedding since inputs are continuous

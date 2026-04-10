@@ -2,7 +2,6 @@ from environment.user_equipments import UE
 from environment.uavs import UAV
 import config
 import numpy as np
-from environment.obstacle import StaticObstacle, DynamicObstacle  # 新增导入
 
 
 class Env:
@@ -13,100 +12,6 @@ class Env:
         self._uavs: list[UAV] = [UAV(i) for i in range(config.NUM_UAVS)] #创建5个无人机
         self._time_step: int = 0 #时间步计数器 初始为0，表示仿真刚开始
         #每个step()被调用一次，_time_step就加1
-
-        # ========== 新增：初始化障碍物 ==========
-        self._static_obstacles: list = []  # 静态障碍物列表
-        self._dynamic_obstacles: list = []  # 动态障碍物列表
-        self._init_obstacles()  # 创建障碍物
-
-        # 避障统计（可选，用于日志）
-        self._collision_count: int = 0  # 累计碰撞次数
-        self._avoidance_count: int = 0  # 累计避障次数
-
-    def _init_obstacles(self) -> None:
-        """
-        初始化静态和动态障碍物
-        位置随机生成，保证不重叠
-        """
-        np.random.seed(config.SEED)  # 可复现
-
-        # ----- 1. 创建静态障碍物（建筑物）-----
-        for i in range(config.NUM_STATIC_OBSTACLES):
-            # 随机位置，避免太靠近边界（留50米缓冲区）
-            pos_x = np.random.uniform(50, config.AREA_WIDTH - 50)
-            pos_y = np.random.uniform(50, config.AREA_HEIGHT - 50)
-            pos = np.array([pos_x, pos_y])
-
-            # 检查是否与已有障碍物重叠（简单避免）
-            overlap = False
-            for obs in self._static_obstacles:
-                if np.linalg.norm(obs.pos - pos) < (obs.radius + config.STATIC_OBSTACLE_RADIUS + 20):
-                    overlap = True
-                    break
-
-            if not overlap:
-                obs = StaticObstacle(i, pos, config.STATIC_OBSTACLE_RADIUS)
-                self._static_obstacles.append(obs)
-
-        # ----- 2. 创建动态障碍物（移动物体）-----
-        for i in range(config.NUM_DYNAMIC_OBSTACLES):
-            # 随机位置
-            pos_x = np.random.uniform(0, config.AREA_WIDTH)
-            pos_y = np.random.uniform(0, config.AREA_HEIGHT)
-            pos = np.array([pos_x, pos_y])
-
-            # 随机速度
-            vx = np.random.uniform(*config.DYNAMIC_OBSTACLE_SPEED_RANGE)
-            vy = np.random.uniform(*config.DYNAMIC_OBSTACLE_SPEED_RANGE)
-            velocity = np.array([vx, vy])
-
-            obs = DynamicObstacle(
-                i + config.NUM_STATIC_OBSTACLES,
-                pos,
-                config.DYNAMIC_OBSTACLE_RADIUS,
-                velocity,
-                (config.AREA_WIDTH, config.AREA_HEIGHT)
-            )
-            self._dynamic_obstacles.append(obs)
-
-        # 打印障碍物信息
-        print(f"🏗️ 初始化完成: {len(self._static_obstacles)}个静态障碍物, "
-              f"{len(self._dynamic_obstacles)}个动态障碍物")
-
-    @property
-    def obstacles(self):
-        """返回所有障碍物列表"""
-        return self._static_obstacles + self._dynamic_obstacles
-
-    def _check_obstacle_collisions(self) -> None:
-        """
-        检测无人机与障碍物的碰撞
-        如果碰撞：
-            1. 标记违规（用于惩罚）
-            2. 推开无人机（物理反应）
-        """
-        for uav in self._uavs:
-            for obs in self.obstacles:
-                # 检测碰撞
-                if obs.check_collision(uav.pos, config.UAV_COVERAGE_RADIUS):
-                    # 标记碰撞违规
-                    uav.collision_violation = True
-                    self._collision_count += 1
-
-                    # 计算推开向量
-                    push = obs.get_push_vector(uav.pos, config.UAV_COVERAGE_RADIUS)
-
-                    # 计算新位置
-                    new_pos = uav.pos[:2] + push
-
-                    # 确保在边界内
-                    new_pos = np.clip(new_pos, 0,
-                                      [config.AREA_WIDTH, config.AREA_HEIGHT])
-
-                    # 更新无人机位置
-                    uav.update_position(new_pos)
-                    self._avoidance_count += 1
-
 
 
     @property
@@ -122,20 +27,17 @@ class Env:
         self._ues = [UE(i) for i in range(config.NUM_UES)]
         self._uavs = [UAV(i) for i in range(config.NUM_UAVS)]
         self._time_step = 0
-
-        # 注意：障碍物位置不变（可选：想重置就取消注释）
-        # self._init_obstacles()
-
-        # 重置统计
-        self._collision_count = 0
-        self._avoidance_count = 0
-
         return self._get_obs() #返回 初始观测
 
     #动作执行，返回新状态和奖励！核心函数
     def step(self, actions: np.ndarray) -> tuple[list[np.ndarray], list[float], tuple[float, float, float, float]]:#actions是动作，不是随机生成的，来自神经网络
         """Execute one time step of the simulation."""
         self._time_step += 1
+        # 信道模型G2A 测试
+        if self._time_step == 1:
+            from environment import comm_model as comms
+            sample_gain = comms.calculate_channel_gain(self._uavs[0].pos, self._ues[0].pos)
+            print(f"Sample channel gain: {sample_gain}")
         #阶段1：无人机处理任务--计算初始负载
         for uav in self._uavs:
             uav.calculate_initial_load() #计算当前覆盖的用户中有多少服务请求
@@ -162,73 +64,69 @@ class Env:
         for ue in self._ues:
             ue.update_position() #用户移动
 
-
         for uav in self._uavs:
             uav.reset_for_next_step()  #重置临时状态
         #阶段7：执行无人机动作（移动）
         self._apply_actions_to_env(actions) #神经网络给出的动作
-
-        # ========== 新增：更新动态障碍物位置 ==========
-        for obs in self._dynamic_obstacles:
-            obs.update()
-
-        # ========== 新增：障碍物碰撞检测 ==========
-        self._check_obstacle_collisions()
-
-
         #阶段8：获取下一步的观测并返回
         next_obs: list[np.ndarray] = self._get_obs()
         return next_obs, rewards, metrics
 
-    def _get_obs(self) -> list[np.ndarray]: #获取每个无人机的观测，二维
-        """Gets the local observation for each UAV agent.
-           返回5个265维的观测向量，每个无人机一个
-           ue.generate_request()：每个用户可能生成三种请求：服务请求(type=0)、内容请求(type=1)、能量请求(type=2)
-           _associate_ues_to_uavs()： 每个用户只能被一个无人机服务，结果：每个无人机的 current_covered_ues 列表被填充
-           set_neighbors()：无人机找邻居
-        """
+    def _get_obs(self) -> list[np.ndarray]:
+        #print("!!! Entering _get_obs !!!")
         # For new time step
         for ue in self._ues:
-            ue.generate_request() #每个用户随机生成任务请求
-        self._associate_ues_to_uavs() #根据覆盖范围，将用户分配给最近的无人机
+            ue.generate_request()
+        self._associate_ues_to_uavs()
         for uav in self._uavs:
-            uav.set_neighbors(self._uavs) #找出在感知范围内的其他无人机
+            uav.set_neighbors(self._uavs)
 
         all_obs: list[np.ndarray] = []
         for uav in self._uavs:
-            # Part 1: Own state (position and cache status)
-            own_pos: np.ndarray = uav.pos[:2] / np.array([config.AREA_WIDTH, config.AREA_HEIGHT]) #位置归一化：把700×700区域映射到[0,1]区间  例如位置(350,350) → (0.5, 0.5)
-            own_cache: np.ndarray = uav.cache.astype(np.float32) # 缓存状态：75个bool值（True/False），表示是否缓存了每个文件
-            own_state: np.ndarray = np.concatenate([own_pos, own_cache]) # 拼接后：2 + 75 = 77维
+            # Part 1: Own state (position, cache status, and UAV type)
+            own_pos: np.ndarray = uav.pos[:2] / np.array([config.AREA_WIDTH, config.AREA_HEIGHT])
+            own_cache: np.ndarray = uav.cache.astype(np.float32)
 
-            # Part 2: Neighbor positions
-            neighbor_states: np.ndarray = np.zeros((config.MAX_UAV_NEIGHBORS, config.NEIGHBOR_OBS_DIM)) #初始化4行*2列的 零矩阵
-            neighbors: list[UAV] = sorted(uav.neighbors, key=lambda n: float(np.linalg.norm(uav.pos - n.pos)))[: config.MAX_UAV_NEIGHBORS] # 找出最近的4个邻居（按距离排序）
+            # ========== 新增：无人机类型 one-hot 编码 (3维) ==========
+            type_onehot = np.zeros(3, dtype=np.float32)
+            type_onehot[uav.type] = 1.0
+            # ======================================================
+
+            # 原代码：own_state = np.concatenate([own_pos, own_cache])   # 77维
+            # 修改后：加入 type_onehot，变为 80 维
+            own_state: np.ndarray = np.concatenate([own_pos, own_cache, type_onehot])  # 2+75+3=80
+
+            # Part 2: Neighbor positions（不变）
+            neighbor_states: np.ndarray = np.zeros((config.MAX_UAV_NEIGHBORS, config.NEIGHBOR_OBS_DIM))
+            neighbors: list[UAV] = sorted(uav.neighbors, key=lambda n: float(np.linalg.norm(uav.pos - n.pos)))[
+                                   : config.MAX_UAV_NEIGHBORS]
             for i, neighbor in enumerate(neighbors):
                 relative_pos: np.ndarray = (neighbor.pos[:2] - uav.pos[:2]) / config.UAV_SENSING_RANGE
-                # 相对位置归一化：除以感知半径300米，  范围在[-1, 1]之间
-                neighbor_states[i, :] = relative_pos # 第i行存这个邻居的相对位置(x,y)
+                neighbor_states[i, :] = relative_pos
 
-            # Part 3: State of associated UEs 关联用户状态
-            ue_states: np.ndarray = np.zeros((config.MAX_ASSOCIATED_UES, config.UE_OBS_DIM)) # 初始化：30行6列的零矩阵
-            # 找出最近的30个用户
-            ues: list[UE] = sorted(uav.current_covered_ues, key=lambda u: float(np.linalg.norm(uav.pos[:2] - u.pos[:2])))[: config.MAX_ASSOCIATED_UES]
+            # Part 3: State of associated UEs（不变）
+            ue_states: np.ndarray = np.zeros((config.MAX_ASSOCIATED_UES, config.UE_OBS_DIM))
+            ues: list[UE] = sorted(uav.current_covered_ues,
+                                   key=lambda u: float(np.linalg.norm(uav.pos[:2] - u.pos[:2])))[
+                            : config.MAX_ASSOCIATED_UES]
             for i, ue in enumerate(ues):
-                # 相对位置（2维）
-                delta_pos: np.ndarray = (ue.pos[:2] - uav.pos[:2]) / config.AREA_WIDTH # 除以区域宽度700米，归一化到[-1,1]
-                req_type, req_size, req_id = ue.current_request  # 用户请求信息（4维）
-                norm_type: float = float(req_type) / 2.0  # assuming 3 types: 0,1,2
+                delta_pos: np.ndarray = (ue.pos[:2] - uav.pos[:2]) / config.AREA_WIDTH
+                req_type, req_size, req_id = ue.current_request
+                norm_type: float = float(req_type) / 2.0
                 norm_id: float = float(req_id) / float(config.NUM_FILES)
-                norm_size: float = float(req_size) / float(config.MAX_INPUT_SIZE) # 归一化文件大小
-                norm_battery: float = ue.battery_level / config.UE_BATTERY_CAPACITY # 电量比例0-1
-                request_info: np.ndarray = np.array([norm_type, norm_size, norm_id, norm_battery], dtype=np.float32) # 拼接相对位置(2维) + 请求信息(4维) = 6维
+                norm_size: float = float(req_size) / float(config.MAX_INPUT_SIZE)
+                norm_battery: float = ue.battery_level / config.UE_BATTERY_CAPACITY
+                request_info: np.ndarray = np.array([norm_type, norm_size, norm_id, norm_battery], dtype=np.float32)
                 ue_states[i, :] = np.concatenate([delta_pos, request_info])
 
-            # Part 4: Combine all parts into a single, flat observation vector
+            # Part 4: Combine all parts
             obs: np.ndarray = np.concatenate([own_state, neighbor_states.flatten(), ue_states.flatten()])
             all_obs.append(obs)
 
+        # 可选：打印第一个观测的维度以验证
+        #print(f"DEBUG env._get_obs: obs shape = {all_obs[0].shape}")
         return all_obs
+
 
     #执行动作，移动无人机 ---需要考虑无人机的碰撞
     def _apply_actions_to_env(self, actions: np.ndarray) -> None:
@@ -344,24 +242,12 @@ class Env:
         offline_rate: float = offline_count / config.NUM_UES
         # 计算奖励  奖励公式：reward = α₃×log(公平性) - α₁×log(延迟) - α₂×log(能耗) - α₄×log(1+离线率)
 
-        # ========== 新增：计算避障惩罚 ==========
-        # 统计本步有多少无人机碰撞了障碍物
-        obstacle_penalty = 0.0
-        for uav in self._uavs:
-            if uav.collision_violation:
-                # 如果无人机碰撞了，添加惩罚
-                obstacle_penalty += config.OBSTACLE_COLLISION_PENALTY
-
         r_fairness: float = config.ALPHA_3 * np.log(jfi + config.EPSILON) # 正项：鼓励公平
         r_latency: float = config.ALPHA_1 * np.log(total_latency + config.EPSILON) # 负项：惩罚延迟
         r_energy: float = config.ALPHA_2 * np.log(total_energy + config.EPSILON) # 负项：惩罚能耗
         r_offline: float = config.ALPHA_4 * np.log(1.0 + offline_rate)  # 负项：惩罚离线率
-
-
-        # ========== 新奖励公式（加入避障惩罚）==========
-        reward = r_fairness - r_latency - r_energy - r_offline - obstacle_penalty
-        # reward: float = r_fairness - r_latency - r_energy - r_offline  # 最终奖励 = 公平性奖励 - 各项惩罚
-        rewards: list[float] = [reward] * config.NUM_UAVS  # 所有无人机得到相同基础奖励
+        reward: float = r_fairness - r_latency - r_energy - r_offline  # 最终奖励 = 公平性奖励 - 各项惩罚
+        rewards: list[float] = [reward] * config.NUM_UAVS # 所有无人机得到相同基础奖励
 
         for uav in self._uavs:
             if uav.collision_violation:

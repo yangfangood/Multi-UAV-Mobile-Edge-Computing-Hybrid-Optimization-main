@@ -93,7 +93,8 @@ ALPHA_4 = 50.0  # weightage for offline rate (negative term, penalizes UEs runni
 REWARD_SCALING_FACTOR: float = 0.01  # scaling factor for rewards (prevents exploding values)奖励的缩放因子（用于防止数值过高而导致的异常情况）
 
 #观测空间（理解智能体能看到什么）
-SELF_OBS_DIM: int = 2 + NUM_FILES  # pos (2) + cache (NUM_FILES)  自身状态：位置(2) + 缓存状态(75维)
+UAV_TYPE_OBS_DIM = 3  # 新增，放在 SELF_OBS_DIM 之前
+SELF_OBS_DIM: int = 2 + NUM_FILES + UAV_TYPE_OBS_DIM # pos (2) + cache (NUM_FILES)  自身状态：位置(2) + 缓存状态(75维)
 UE_OBS_DIM: int = 2 + 3 + 1  # pos (2) + request_tuple (3) + battery level (1) 用户状态：位置(2) + 请求(3) + 电量(1)
 NEIGHBOR_OBS_DIM: int = 2  # pos (2) 邻居位置(2)
 #每个无人机总的观测维度
@@ -168,3 +169,64 @@ OBSTACLE_COLLISION_PENALTY: float = 20.0  # 碰撞障碍物惩罚
 
 # 动态障碍物速度范围
 DYNAMIC_OBSTACLE_SPEED_RANGE: tuple = (-3.0, 3.0)  # 速度范围（米/秒）
+
+#=======================异构无人机配置=======================
+# 类型定义
+UAV_TYPE_COMPUTE = 0    # 计算型
+UAV_TYPE_STORAGE = 1    # 存储型
+UAV_TYPE_BALANCED = 2   # 均衡型
+
+# 5个无人机的类型分配（可根据需要修改）
+UAV_TYPE_ASSIGN = [
+    UAV_TYPE_COMPUTE,   # UAV0
+    UAV_TYPE_STORAGE,   # UAV1
+    UAV_TYPE_BALANCED,  # UAV2
+    UAV_TYPE_COMPUTE,   # UAV3
+    UAV_TYPE_STORAGE    # UAV4
+]
+
+# 硬件参数
+# 计算型
+COMPUTE_UAV_COMPUTING = 20 * 10**9   # 20 GHz
+COMPUTE_UAV_STORAGE   = 20 * 10**6   # 20 MB
+
+# 存储型
+STORAGE_UAV_COMPUTING = 5 * 10**9    # 5 GHz
+STORAGE_UAV_STORAGE   = 80 * 10**6   # 80 MB
+
+# 均衡型
+BALANCED_UAV_COMPUTING = 12 * 10**9
+BALANCED_UAV_STORAGE   = 50 * 10**6
+
+# 能力匹配因子（用于延迟修正）
+# 服务任务对计算型的加速因子
+SERVICE_COMPUTE_FACTOR = 1.2   # 延迟缩短20%
+SERVICE_STORAGE_FACTOR = 0.8   # 延迟增加20%
+SERVICE_BALANCED_FACTOR = 1.0
+
+# 内容任务对存储型的加速因子
+CONTENT_STORAGE_FACTOR = 1.2
+CONTENT_COMPUTE_FACTOR = 0.8
+CONTENT_BALANCED_FACTOR = 1.0
+
+# 匹配奖励（可选）
+MATCH_REWARD_SERVICE_TO_COMPUTE = 0.5
+MATCH_REWARD_CONTENT_TO_STORAGE = 0.5
+MATCH_REWARD_BALANCED_BONUS = 0.2
+
+# === 新增 G2A 信道模型参数 ===
+# 场景设置
+ENVIRONMENT = "urban"  # "urban", "suburban", "rural"
+CARRIER_FREQUENCY = 2.4e9  # Hz
+
+# LoS 概率模型参数 (以城市环境为例)
+LOS_A = 9.61
+LOS_B = 0.16
+
+# 路径损耗指数
+PATH_LOSS_EXP_LOS = 2.0
+PATH_LOSS_EXP_NLOS = 3.5
+
+# 额外衰减因子 (dB)
+ETA_LOS = 0.0  # dB
+ETA_NLOS = 20.0  # dB

@@ -1,3 +1,4 @@
+import config
 from marl_models.buffer_and_helpers import layer_init
 from marl_models.attention import AttentionActorBase, AttentionCriticBase
 import torch
@@ -6,6 +7,11 @@ import torch.nn as nn
 
 class ActorNetwork(AttentionActorBase):
     def __init__(self, obs_dim: int, action_dim: int) -> None:
+        # 确保 obs_dim 使用 config 中的值（如果传入的是 None 或错误值）
+        if obs_dim != config.OBS_DIM_SINGLE:
+            print(
+                f"Warning: ActorNetwork received obs_dim={obs_dim}, but config.OBS_DIM_SINGLE={config.OBS_DIM_SINGLE}. Overriding.")
+            obs_dim = config.OBS_DIM_SINGLE
         super().__init__(obs_dim)
         self.out: nn.Linear = layer_init(nn.Linear(self.hidden_dim, action_dim), std=0.01)  # Small std for output
 

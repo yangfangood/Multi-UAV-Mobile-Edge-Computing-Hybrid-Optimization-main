@@ -123,6 +123,7 @@ def train_off_policy(env: Env, model: MARLModel, logger: Logger, num_episodes: i
 
     for episode in range(1, num_episodes + 1):
         obs = env.reset()
+  #      print(f"train_off_policy: initial obs shape = {obs[0].shape}")  # 添加
         model.reset()
         episode_reward: float = 0.0
         episode_latency: float = 0.0

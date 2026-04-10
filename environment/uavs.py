@@ -29,7 +29,7 @@ def _try_add_file_to_cache(uav: UAV, file_id: int) -> None:
     if uav._working_cache[file_id]:
         return  # Already in cache
     used_space: int = np.sum(uav._working_cache * config.FILE_SIZES) # 已用空间
-    if used_space + config.FILE_SIZES[file_id] <= config.UAV_STORAGE_CAPACITY[uav.id]:
+    if used_space + config.FILE_SIZES[file_id] <= uav.storage_capacity:
         uav._working_cache[file_id] = True # 空间够就加入
 
 
@@ -37,6 +37,18 @@ class UAV:
     # 初始化无人机属性
     def __init__(self, uav_id: int) -> None:
         self.id: int = uav_id #唯一标识
+        #获取类型
+        self.type = config.UAV_TYPE_ASSIGN[uav_id]
+        # 根据类型设置计算和存储能力
+        if self.type == config.UAV_TYPE_COMPUTE:
+            self.computing_capacity = config.COMPUTE_UAV_COMPUTING
+            self.storage_capacity = config.COMPUTE_UAV_STORAGE
+        elif self.type == config.UAV_TYPE_STORAGE:
+            self.computing_capacity = config.STORAGE_UAV_COMPUTING
+            self.storage_capacity = config.STORAGE_UAV_STORAGE
+        else:  # BALANCED
+            self.computing_capacity = config.BALANCED_UAV_COMPUTING
+            self.storage_capacity = config.BALANCED_UAV_STORAGE
         # 三维位置
         self.pos: np.ndarray = np.array([np.random.uniform(0, config.AREA_WIDTH),  # x坐标 0-700米随机
                                          np.random.uniform(0, config.AREA_HEIGHT), # y坐标 0-700米随机
@@ -314,7 +326,7 @@ class UAV:
         used_space = 0.0
         for file_id in sorted_file_ids:
             file_size = config.FILE_SIZES[file_id]
-            if used_space + file_size <= config.UAV_STORAGE_CAPACITY[self.id]:
+            if used_space + file_size <= self.storage_capacity:
                 self.cache[file_id] = True
                 used_space += file_size
             else:

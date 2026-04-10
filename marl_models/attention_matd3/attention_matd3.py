@@ -49,6 +49,7 @@ class AttentionMATD3(MARLModel):
            返回:
                actions: 形状(5,2)的动作数组
         """
+       # print(f"select_actions: observations[0].shape = {observations[0].shape}")  # 添加这一行
         actions: list[np.ndarray] = []
         with torch.no_grad(): # 关闭梯度计算
             for i, obs in enumerate(observations):
