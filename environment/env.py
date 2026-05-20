@@ -84,18 +84,29 @@ class Env:
         all_obs: list[np.ndarray] = []
         for uav in self._uavs:
             # Part 1: Own state (position, cache status, and UAV type)
-            own_pos: np.ndarray = uav.pos[:2] / np.array([config.AREA_WIDTH, config.AREA_HEIGHT])
+            own_pos: np.ndarray = (uav.pos[:2] / [config.AREA_WIDTH, config.AREA_HEIGHT]).astype(np.float32)
             own_cache: np.ndarray = uav.cache.astype(np.float32)
 
             # ========== 新增：无人机类型 one-hot 编码 (3维) ==========
             type_onehot = np.zeros(3, dtype=np.float32)
             type_onehot[uav.type] = 1.0
-            # ======================================================
-
+            # =======================新增能力数值===============================
+            # 假设最大计算能力为 config.UAV_COMPUTING_CAPACITY 中的最大值（或已知常量）
+            norm_compute = np.clip(uav.computing_capacity / config.MAX_UAV_COMPUTING, 0.0, 1.0)
+            norm_storage = np.clip(uav.storage_capacity / config.MAX_UAV_STORAGE, 0.0, 1.0)
+            norm_load = np.clip(uav._current_service_request_count / config.MAX_LOAD, 0.0, 1.0)
             # 原代码：own_state = np.concatenate([own_pos, own_cache])   # 77维
             # 修改后：加入 type_onehot，变为 80 维
-            own_state: np.ndarray = np.concatenate([own_pos, own_cache, type_onehot])  # 2+75+3=80
-
+            # own_state: np.ndarray = np.concatenate([own_pos, own_cache, type_onehot,[norm_compute, norm_storage],[norm_load] ])  # 2+75+3 + 2 +1=83  增加 2 维
+            capability = np.array([norm_compute, norm_storage], dtype=np.float32)
+            load = np.array([norm_load], dtype=np.float32)
+            own_state = np.concatenate([
+                own_pos,
+                own_cache,
+                type_onehot,
+                capability,
+                load
+            ])
             # Part 2: Neighbor positions（不变）
             neighbor_states: np.ndarray = np.zeros((config.MAX_UAV_NEIGHBORS, config.NEIGHBOR_OBS_DIM))
             neighbors: list[UAV] = sorted(uav.neighbors, key=lambda n: float(np.linalg.norm(uav.pos - n.pos)))[
@@ -225,6 +236,7 @@ class Env:
           else:  # 如果用户没被服务
                 return config.NON_SERVED_LATENCY_PENALTY  # 返回惩罚值（20.0）
         """
+        # print("USING MODIFIED REWARD FUNCTION (LINEAR NORMALIZED)")
         # 计算总延迟
         total_latency: float = sum(ue.latency_current_request if ue.assigned else config.NON_SERVED_LATENCY_PENALTY for ue in self._ues)
         # 所有无人机的能耗之和（飞行 + 悬停 + 计算 + WPT）
@@ -240,9 +252,53 @@ class Env:
         offline_count: int = sum(1 for ue in self._ues if ue.battery_level < config.UE_CRITICAL_THRESHOLD)
         # 离线用户比例
         offline_rate: float = offline_count / config.NUM_UES
-        # 计算奖励  奖励公式：reward = α₃×log(公平性) - α₁×log(延迟) - α₂×log(能耗) - α₄×log(1+离线率)
 
-        r_fairness: float = config.ALPHA_3 * np.log(jfi + config.EPSILON) # 正项：鼓励公平
+        # 计算奖励  奖励公式：reward = α₃×log(公平性) - α₁×log(延迟) - α₂×log(能耗) - α₄×log(1+离线率)
+        # ========== 归一化处理 ==========
+
+
+        norm_latency = total_latency / config.MAX_LATENCY
+        norm_energy = total_energy / config.MAX_ENERGY
+
+        # 可选：clip 防止极端值
+        norm_latency = np.clip(norm_latency, 0.0, 1.0)
+        norm_energy = np.clip(norm_energy, 0.0, 1.0)
+
+        # ========== 奖励权重 ==========
+        w_fair = config.ALPHA_3  # 公平性增益
+        w_lat = config.ALPHA_1  # 延迟惩罚
+        w_eng = config.ALPHA_2  # 能耗惩罚
+        w_off = config.ALPHA_4  # 离线率惩罚（保持高权重，鼓励充电）
+
+        # 奖励公式（所有项均为线性，范围相近）
+        reward = (w_fair * jfi
+                  - w_lat * norm_latency
+                  - w_eng * norm_energy
+                  - w_off * offline_rate)
+        #确认数值量级
+        if self._time_step % 100 == 0:  # 每100步打印一次
+            print(f"[DEBUG] total_latency={total_latency:.2e}, norm_lat={norm_latency:.3f}")
+            print(f"[DEBUG] total_energy={total_energy:.2e}, norm_eng={norm_energy:.3f}")
+            print(f"[DEBUG] jfi={jfi:.3f}, offline_rate={offline_rate:.3f}")
+            print(f"[DEBUG] raw reward (before scaling) = {reward:.4f}")
+            print(f"[DEBUG] final reward (after scaling) = {reward * config.REWARD_SCALING_FACTOR:.4f}")
+
+        # 每个无人机获得相同的基础奖励
+        rewards = [reward] * config.NUM_UAVS
+
+        # 添加碰撞/越界惩罚（保持原样）
+        for uav in self._uavs:
+            if uav.collision_violation:
+                rewards[uav.id] -= config.COLLISION_PENALTY
+            if uav.boundary_violation:
+                rewards[uav.id] -= config.BOUNDARY_PENALTY
+
+        # 最终缩放（可选，保留原缩放因子）
+        rewards = [r * config.REWARD_SCALING_FACTOR for r in rewards]
+
+        return rewards, (total_latency, total_energy, jfi, offline_rate)
+"""
+r_fairness: float = config.ALPHA_3 * np.log(jfi + config.EPSILON) # 正项：鼓励公平
         r_latency: float = config.ALPHA_1 * np.log(total_latency + config.EPSILON) # 负项：惩罚延迟
         r_energy: float = config.ALPHA_2 * np.log(total_energy + config.EPSILON) # 负项：惩罚能耗
         r_offline: float = config.ALPHA_4 * np.log(1.0 + offline_rate)  # 负项：惩罚离线率
@@ -255,5 +311,8 @@ class Env:
             if uav.boundary_violation:
                 rewards[uav.id] -= config.BOUNDARY_PENALTY # 越界惩罚 10.0
         rewards = [r * config.REWARD_SCALING_FACTOR for r in rewards] # 乘以0.01防止值过大 对奖励进行缩放
-        return rewards, (total_latency, total_energy, jfi, offline_rate)
+        return rewards, (total_latency, total_energy, jfi, offline_rate)  
+"""
+
+
 

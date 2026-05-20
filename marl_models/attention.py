@@ -12,6 +12,9 @@ class CrossAttentionExtractor(nn.Module):
     Inputs:
         - self_embedding: The 'Query' (Agent's own state)
         - target_embeddings: The 'Keys/Values' (Neighbors or UEs)
+    将原有的多头自注意力网络替换为 HGAT 异构图注意力网络，用于critic网络中的多智能体信息聚合
+    修改不依赖 torch-geometric  仅使用 PyTorch 原生操作，保证与现有项目兼容。如果你愿意安装 torch-geometric，也可以使用其 HeteroConv 等模块简化实现。
+
     """
 
     def __init__(self, self_dim: int, target_dim: int) -> None:
@@ -153,12 +156,15 @@ class AttentionCriticBase(nn.Module):
         self.attention: CrossAttentionExtractor = CrossAttentionExtractor(self_dim=self.hidden_dim, target_dim=self.hidden_dim)
 
         self.fusion_dim: int = self.hidden_dim * 2
-
+    # get_all_embeddings 返回每个智能体的嵌入向量，作为所有节点的初始特征
     def get_all_embeddings(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.state_encoder(inputs)
 
     def attend_to_others(self, embeddings: torch.Tensor, num_agents: int, agent_index: int) -> torch.Tensor:
-        """Performs attention for agent i over all other agents."""
+        """Performs attention for agent i over all other agents.
+           为当前指定的智能体聚合其他所有智能体的信息，生成一个上下文向量，并与该智能体自身的嵌入拼接，输出一个融合了全局协作信息的特征向量
+
+        """
         # Extract "Me"
         me_embedding: torch.Tensor = embeddings[:, agent_index, :]
 
@@ -186,10 +192,10 @@ class AttentionCriticBase(nn.Module):
             output_embedding: (Batch, Fusion_Dim)
         """
         num_agents: int = obs_tensor.shape[1]
-        inputs: torch.Tensor = torch.cat([obs_tensor, action_tensor], dim=2)
+        inputs: torch.Tensor = torch.cat([obs_tensor, action_tensor], dim=2)  # 拼接观测与动作--每个智能体的观测和动作在最后一维拼接--(batch, num_agents, obs_dim+action_dim)--为每个智能体提供了完整的输入信息
 
         # Encode everyone
         embeddings: torch.Tensor = self.get_all_embeddings(inputs)
 
-        # Attend to others
+        # Attend to others 注意力聚合其他智能体的信息
         return self.attend_to_others(embeddings, num_agents, agent_index)

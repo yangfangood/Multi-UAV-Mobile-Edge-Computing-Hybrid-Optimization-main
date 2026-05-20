@@ -190,7 +190,7 @@ class UAV:
             assert self._current_service_request_count > 0
             est_comp_latency: float = cpu_cycles / (config.UAV_COMPUTING_CAPACITY[self.id] / self._current_service_request_count)
             exp_local_latency = ue_uav_upload_latency + exp_fetch_latency + est_comp_latency  # Overwrite for service
-
+        # 在这里加
         best_exp_latency: float = exp_local_latency
         best_target_idx: int = 0
         best_target_uav: UAV | None = None
@@ -206,25 +206,44 @@ class UAV:
             best_exp_latency = exp_mbs_latency
             best_target_idx = 2
 
-        # Collaborating UAV Expected Latency
+        # Collaborating UAV Expected Latency  计算协作无人机的预期延迟
         for neighbor in self._neighbors:
             belief_prob: float = _get_belief_probability(req_id, neighbor.id)
 
             uav_uav_rate: float = comms.calculate_uav_uav_rate(comms.calculate_channel_gain(self.pos, neighbor.pos))
-            uav_mbs_rate: float = comms.calculate_uav_mbs_rate(comms.calculate_channel_gain(neighbor.pos, config.MBS_POS))
+            uav_mbs_rate: float = comms.calculate_uav_mbs_rate(
+                comms.calculate_channel_gain(neighbor.pos, config.MBS_POS))
             uav_uav_download_latency: float = file_size / uav_uav_rate
             exp_neighbor_fetch_latency: float = (1.0 - belief_prob) * (file_size / uav_mbs_rate)  # For both
             exp_neighbor_latency: float = exp_neighbor_fetch_latency + uav_uav_download_latency + ue_uav_download_latency  # For content
             if req_type == 0:  # Service
-                # Neighbor Load: They broadcasted 'initial_load'. We add +1 because "If I come, I add to the pile."
                 neigh_load: int = neighbor._current_service_request_count + 1
                 assert neigh_load > 0
                 est_comp_latency: float = cpu_cycles / (config.UAV_COMPUTING_CAPACITY[neighbor.id] / neigh_load)
                 uav_uav_upload_latency: float = req_size / uav_uav_rate
-                exp_neighbor_latency = ue_uav_upload_latency + uav_uav_upload_latency + exp_neighbor_fetch_latency + est_comp_latency  # Overwrite for service
+                exp_neighbor_latency = ue_uav_upload_latency + uav_uav_upload_latency + exp_neighbor_fetch_latency + est_comp_latency
 
-            if exp_neighbor_latency < best_exp_latency:
-                best_exp_latency = exp_neighbor_latency
+            # 能力感知因子调整（先定义默认因子，再覆盖）
+            factor = 1.0
+            if req_type == 0:  # service
+                if neighbor.type == config.UAV_TYPE_COMPUTE:
+                    factor = config.SERVICE_COMPUTE_FACTOR
+                elif neighbor.type == config.UAV_TYPE_STORAGE:
+                    factor = config.SERVICE_STORAGE_FACTOR
+                else:
+                    factor = config.SERVICE_BALANCED_FACTOR
+            else:  # content (req_type == 1)
+                if neighbor.type == config.UAV_TYPE_STORAGE:
+                    factor = config.CONTENT_STORAGE_FACTOR
+                elif neighbor.type == config.UAV_TYPE_COMPUTE:
+                    factor = config.CONTENT_COMPUTE_FACTOR
+                else:
+                    factor = config.CONTENT_BALANCED_FACTOR
+
+            adjusted_latency = exp_neighbor_latency / factor
+
+            if adjusted_latency < best_exp_latency:
+                best_exp_latency = adjusted_latency
                 best_target_idx = 1
                 best_target_uav = neighbor
 
@@ -307,7 +326,8 @@ class UAV:
     def _process_energy_request(self, ue: UE) -> None:
         """Process an emergency energy request from a UE."""
         channel_gain: float = comms.calculate_channel_gain(self.pos, ue.pos)
-        harv_energy: float = config.WPT_EFFICIENCY * config.WPT_TRANSMIT_POWER * channel_gain * config.TIME_SLOT_DURATION
+        #harv_energy: float = config.WPT_EFFICIENCY * config.WPT_TRANSMIT_POWER * channel_gain * config.TIME_SLOT_DURATION
+        harv_energy = 5.0  # 直接充 5 焦耳，确保用户能回电
         ue.update_battery(harv_energy, 0.0)
         ue.latency_current_request = 0.0  # No latency deadline for energy requests
     #无人机学习用户偏好的核心函数

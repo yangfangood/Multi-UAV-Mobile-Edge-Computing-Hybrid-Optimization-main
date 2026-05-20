@@ -2,6 +2,7 @@ from environment.user_equipments import UE
 from environment.uavs import UAV
 import config
 import numpy as np
+from environment.obstacle import StaticObstacle, DynamicObstacle  # 新增导入
 
 
 class Env:
@@ -12,6 +13,100 @@ class Env:
         self._uavs: list[UAV] = [UAV(i) for i in range(config.NUM_UAVS)] #创建5个无人机
         self._time_step: int = 0 #时间步计数器 初始为0，表示仿真刚开始
         #每个step()被调用一次，_time_step就加1
+
+        # ========== 新增：初始化障碍物 ==========
+        self._static_obstacles: list = []  # 静态障碍物列表
+        self._dynamic_obstacles: list = []  # 动态障碍物列表
+        self._init_obstacles()  # 创建障碍物
+
+        # 避障统计（可选，用于日志）
+        self._collision_count: int = 0  # 累计碰撞次数
+        self._avoidance_count: int = 0  # 累计避障次数
+
+    def _init_obstacles(self) -> None:
+        """
+        初始化静态和动态障碍物
+        位置随机生成，保证不重叠
+        """
+        np.random.seed(config.SEED)  # 可复现
+
+        # ----- 1. 创建静态障碍物（建筑物）-----
+        for i in range(config.NUM_STATIC_OBSTACLES):
+            # 随机位置，避免太靠近边界（留50米缓冲区）
+            pos_x = np.random.uniform(50, config.AREA_WIDTH - 50)
+            pos_y = np.random.uniform(50, config.AREA_HEIGHT - 50)
+            pos = np.array([pos_x, pos_y])
+
+            # 检查是否与已有障碍物重叠（简单避免）
+            overlap = False
+            for obs in self._static_obstacles:
+                if np.linalg.norm(obs.pos - pos) < (obs.radius + config.STATIC_OBSTACLE_RADIUS + 20):
+                    overlap = True
+                    break
+
+            if not overlap:
+                obs = StaticObstacle(i, pos, config.STATIC_OBSTACLE_RADIUS)
+                self._static_obstacles.append(obs)
+
+        # ----- 2. 创建动态障碍物（移动物体）-----
+        for i in range(config.NUM_DYNAMIC_OBSTACLES):
+            # 随机位置
+            pos_x = np.random.uniform(0, config.AREA_WIDTH)
+            pos_y = np.random.uniform(0, config.AREA_HEIGHT)
+            pos = np.array([pos_x, pos_y])
+
+            # 随机速度
+            vx = np.random.uniform(*config.DYNAMIC_OBSTACLE_SPEED_RANGE)
+            vy = np.random.uniform(*config.DYNAMIC_OBSTACLE_SPEED_RANGE)
+            velocity = np.array([vx, vy])
+
+            obs = DynamicObstacle(
+                i + config.NUM_STATIC_OBSTACLES,
+                pos,
+                config.DYNAMIC_OBSTACLE_RADIUS,
+                velocity,
+                (config.AREA_WIDTH, config.AREA_HEIGHT)
+            )
+            self._dynamic_obstacles.append(obs)
+
+        # 打印障碍物信息
+        print(f"🏗️ 初始化完成: {len(self._static_obstacles)}个静态障碍物, "
+              f"{len(self._dynamic_obstacles)}个动态障碍物")
+
+    @property
+    def obstacles(self):
+        """返回所有障碍物列表"""
+        return self._static_obstacles + self._dynamic_obstacles
+
+    def _check_obstacle_collisions(self) -> None:
+        """
+        检测无人机与障碍物的碰撞
+        如果碰撞：
+            1. 标记违规（用于惩罚）
+            2. 推开无人机（物理反应）
+        """
+        for uav in self._uavs:
+            for obs in self.obstacles:
+                # 检测碰撞
+                if obs.check_collision(uav.pos, config.UAV_COVERAGE_RADIUS):
+                    # 标记碰撞违规
+                    uav.collision_violation = True
+                    self._collision_count += 1
+
+                    # 计算推开向量
+                    push = obs.get_push_vector(uav.pos, config.UAV_COVERAGE_RADIUS)
+
+                    # 计算新位置
+                    new_pos = uav.pos[:2] + push
+
+                    # 确保在边界内
+                    new_pos = np.clip(new_pos, 0,
+                                      [config.AREA_WIDTH, config.AREA_HEIGHT])
+
+                    # 更新无人机位置
+                    uav.update_position(new_pos)
+                    self._avoidance_count += 1
+
 
 
     @property
@@ -27,6 +122,14 @@ class Env:
         self._ues = [UE(i) for i in range(config.NUM_UES)]
         self._uavs = [UAV(i) for i in range(config.NUM_UAVS)]
         self._time_step = 0
+
+        # 注意：障碍物位置不变（可选：想重置就取消注释）
+        # self._init_obstacles()
+
+        # 重置统计
+        self._collision_count = 0
+        self._avoidance_count = 0
+
         return self._get_obs() #返回 初始观测
 
     #动作执行，返回新状态和奖励！核心函数
@@ -59,10 +162,20 @@ class Env:
         for ue in self._ues:
             ue.update_position() #用户移动
 
+
         for uav in self._uavs:
             uav.reset_for_next_step()  #重置临时状态
         #阶段7：执行无人机动作（移动）
         self._apply_actions_to_env(actions) #神经网络给出的动作
+
+        # ========== 新增：更新动态障碍物位置 ==========
+        for obs in self._dynamic_obstacles:
+            obs.update()
+
+        # ========== 新增：障碍物碰撞检测 ==========
+        self._check_obstacle_collisions()
+
+
         #阶段8：获取下一步的观测并返回
         next_obs: list[np.ndarray] = self._get_obs()
         return next_obs, rewards, metrics
@@ -231,12 +344,24 @@ class Env:
         offline_rate: float = offline_count / config.NUM_UES
         # 计算奖励  奖励公式：reward = α₃×log(公平性) - α₁×log(延迟) - α₂×log(能耗) - α₄×log(1+离线率)
 
+        # ========== 新增：计算避障惩罚 ==========
+        # 统计本步有多少无人机碰撞了障碍物
+        obstacle_penalty = 0.0
+        for uav in self._uavs:
+            if uav.collision_violation:
+                # 如果无人机碰撞了，添加惩罚
+                obstacle_penalty += config.OBSTACLE_COLLISION_PENALTY
+
         r_fairness: float = config.ALPHA_3 * np.log(jfi + config.EPSILON) # 正项：鼓励公平
         r_latency: float = config.ALPHA_1 * np.log(total_latency + config.EPSILON) # 负项：惩罚延迟
         r_energy: float = config.ALPHA_2 * np.log(total_energy + config.EPSILON) # 负项：惩罚能耗
         r_offline: float = config.ALPHA_4 * np.log(1.0 + offline_rate)  # 负项：惩罚离线率
-        reward: float = r_fairness - r_latency - r_energy - r_offline  # 最终奖励 = 公平性奖励 - 各项惩罚
-        rewards: list[float] = [reward] * config.NUM_UAVS # 所有无人机得到相同基础奖励
+
+
+        # ========== 新奖励公式（加入避障惩罚）==========
+        reward = r_fairness - r_latency - r_energy - r_offline - obstacle_penalty
+        # reward: float = r_fairness - r_latency - r_energy - r_offline  # 最终奖励 = 公平性奖励 - 各项惩罚
+        rewards: list[float] = [reward] * config.NUM_UAVS  # 所有无人机得到相同基础奖励
 
         for uav in self._uavs:
             if uav.collision_violation:
