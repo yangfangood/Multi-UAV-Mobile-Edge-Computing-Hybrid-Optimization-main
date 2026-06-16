@@ -275,13 +275,7 @@ class Env:
                   - w_lat * norm_latency
                   - w_eng * norm_energy
                   - w_off * offline_rate)
-        #确认数值量级
-        if self._time_step % 100 == 0:  # 每100步打印一次
-            print(f"[DEBUG] total_latency={total_latency:.2e}, norm_lat={norm_latency:.3f}")
-            print(f"[DEBUG] total_energy={total_energy:.2e}, norm_eng={norm_energy:.3f}")
-            print(f"[DEBUG] jfi={jfi:.3f}, offline_rate={offline_rate:.3f}")
-            print(f"[DEBUG] raw reward (before scaling) = {reward:.4f}")
-            print(f"[DEBUG] final reward (after scaling) = {reward * config.REWARD_SCALING_FACTOR:.4f}")
+
 
         # 每个无人机获得相同的基础奖励
         rewards = [reward] * config.NUM_UAVS

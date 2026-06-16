@@ -39,18 +39,21 @@ class MATD3(MARLModel):
         actions: list[np.ndarray] = []
         with torch.no_grad():
             for i, obs in enumerate(observations):
-                obs_tensor: torch.Tensor = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+                # 统一使用 torch.as_tensor 提升性能
+                obs_tensor: torch.Tensor = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
                 action: np.ndarray = self.actors[i](obs_tensor).squeeze(0).cpu().numpy()
 
                 if exploration:
                     action += self.noise[i].sample()
+                    self.noise[i].decay()  # 探索噪声在每个动作选择后衰减
 
                 actions.append(np.clip(action, -1.0, 1.0))
 
         return np.array(actions)
 
     def update(self, batch: ExperienceBatch) -> dict:
-        assert (isinstance(batch, tuple) and len(batch) == 5), "MATD3 expects OffPolicyExperienceBatch (tuple of 5 elements)"
+        assert (isinstance(batch, tuple) and len(
+            batch) == 5), "MATD3 expects OffPolicyExperienceBatch (tuple of 5 elements)"
         self.update_counter += 1
         obs_batch, actions_batch, rewards_batch, next_obs_batch, dones_batch = batch
         obs_tensor: torch.Tensor = torch.as_tensor(obs_batch, dtype=torch.float32, device=self.device)
@@ -68,24 +71,26 @@ class MATD3(MARLModel):
         agent_critic_losses_2: list[float] = []
         agent_losses: list[float] = []
 
-        for agent_idx in range(self.num_agents):
-            # Update Critic
-            with torch.no_grad():
-                next_actions: list[torch.Tensor] = []
-                for i in range(self.num_agents):
-                    next_action_i: torch.Tensor = self.target_actors[i](next_obs_tensor[:, i, :])
-                    noise: torch.Tensor = (torch.randn_like(next_action_i) * config.TARGET_POLICY_NOISE)
-                    clipped_noise: torch.Tensor = torch.clamp(noise, -config.NOISE_CLIP, config.NOISE_CLIP)
-                    next_actions.append(torch.clamp(next_action_i + clipped_noise, -1.0, 1.0))
+        # ---- 提前计算所有智能体的目标动作（只需一次） ----
+        with torch.no_grad():
+            next_actions_list: list[torch.Tensor] = []
+            for i in range(self.num_agents):
+                next_action_i: torch.Tensor = self.target_actors[i](next_obs_tensor[:, i, :])
+                noise: torch.Tensor = torch.randn_like(next_action_i) * config.TARGET_POLICY_NOISE
+                clipped_noise: torch.Tensor = torch.clamp(noise, -config.NOISE_CLIP, config.NOISE_CLIP)
+                next_actions_list.append(torch.clamp(next_action_i + clipped_noise, -1.0, 1.0))
+            next_actions_tensor: torch.Tensor = torch.cat(next_actions_list, dim=1)  # shape: (batch, total_action_dim)
 
-                next_actions_tensor: torch.Tensor = torch.cat(next_actions, dim=1)
+        # ---- 更新 Critic 网络 ----
+        for agent_idx in range(self.num_agents):
+            with torch.no_grad():
                 target_q1: torch.Tensor = self.target_critics_1[agent_idx](next_obs_flat, next_actions_tensor)
                 target_q2: torch.Tensor = self.target_critics_2[agent_idx](next_obs_flat, next_actions_tensor)
                 target_q_min: torch.Tensor = torch.min(target_q1, target_q2)
 
                 agent_reward: torch.Tensor = rewards_tensor[:, agent_idx].unsqueeze(1)
                 agent_done: torch.Tensor = dones_tensor[:, agent_idx].unsqueeze(1)
-                y: torch.Tensor = (agent_reward + config.DISCOUNT_FACTOR * target_q_min * (1 - agent_done))
+                y: torch.Tensor = agent_reward + config.DISCOUNT_FACTOR * target_q_min * (1 - agent_done)
 
             current_q1: torch.Tensor = self.critics_1[agent_idx](obs_flat, actions_flat)
             current_q2: torch.Tensor = self.critics_2[agent_idx](obs_flat, actions_flat)
@@ -104,11 +109,10 @@ class MATD3(MARLModel):
             self.critic_2_optimizers[agent_idx].step()
             agent_critic_losses_2.append(float(critic_2_loss.detach().item()))
 
-        # Delayed Policy and Target Network Updates
+        # ---- 延迟更新 Actor 和 Target 网络 ----
         if self.update_counter % config.POLICY_UPDATE_FREQ == 0:
             for agent_idx in range(self.num_agents):
-                # Update Actor
-                # The actor loss is calculated using only the first critic
+                # 更新 Actor（使用第一个 critic）
                 pred_actions_tensor: torch.Tensor = actions_tensor.detach().clone()
                 pred_actions_tensor[:, agent_idx, :] = self.actors[agent_idx](obs_tensor[:, agent_idx, :])
                 pred_actions_flat: torch.Tensor = pred_actions_tensor.reshape(batch_size, -1)
@@ -120,21 +124,21 @@ class MATD3(MARLModel):
                 self.actor_optimizers[agent_idx].step()
                 agent_losses.append(float(actor_loss.detach().item()))
 
-                # Soft update all target networks
+                # 软更新目标网络
                 soft_update(self.target_actors[agent_idx], self.actors[agent_idx], config.UPDATE_FACTOR)
                 soft_update(self.target_critics_1[agent_idx], self.critics_1[agent_idx], config.UPDATE_FACTOR)
                 soft_update(self.target_critics_2[agent_idx], self.critics_2[agent_idx], config.UPDATE_FACTOR)
 
-            for n in self.noise:
-                n.decay()
+            # 注意：如果希望在策略更新时衰减探索噪声，取消下面注释；否则建议在 select_actions 中衰减
+            # for n in self.noise:
+            #     n.decay()
 
-        # Return averaged losses across all agents
+        # 返回平均损失
         avg_critic_loss = float(np.mean(agent_critic_losses_1 + agent_critic_losses_2))
         return {
             "actor": float(np.mean(agent_losses)) if agent_losses else None,
             "critic": avg_critic_loss,
         }
-
     def _init_target_networks(self) -> None:
         for actor, target_actor in zip(self.actors, self.target_actors):
             target_actor.load_state_dict(actor.state_dict())

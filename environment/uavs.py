@@ -70,6 +70,10 @@ class UAV:
 
         self._uav_mbs_rate: float = 0.0 #无人机到基站的传输速率
 
+        self.total_fly_energy = 0.0  # 累计飞行+悬停能耗
+        self.total_wpt_tx_energy = 0.0  # 累计无线充电发射能耗
+
+        self.total_compute_energy = 0.0
     @property
     def energy(self) -> float:
         return self._energy_current_slot
@@ -267,6 +271,7 @@ class UAV:
             comp_latency, comp_energy = _get_computing_latency_and_energy(self, cpu_cycles)
             ue.latency_current_request = ue_uav_upload_latency + fetch_latency + comp_latency
             self._energy_current_slot += comp_energy
+            self.total_compute_energy += comp_energy
 
         elif target_idx == 1:  # Collaborating UAV
             assert target_uav is not None
@@ -282,6 +287,7 @@ class UAV:
             comp_latency, comp_energy = _get_computing_latency_and_energy(target_uav, cpu_cycles)
             ue.latency_current_request = ue_uav_upload_latency + uav_uav_upload_latency + fetch_latency + comp_latency
             target_uav._energy_current_slot += comp_energy
+            target_uav.total_compute_energy += comp_energy  # 新增
             _try_add_file_to_cache(self, req_id)  # Since it was a miss, try to add to associated UAV's cache as well in background
 
         else:  # MBS
@@ -353,12 +359,39 @@ class UAV:
                 break
 
     #无人机能量会计的核心函数
+ #   def update_energy_consumption(self) -> None:
+ #       """Update UAV energy consumption for the current time slot."""
+ #      time_moving = self._dist_moved / config.UAV_SPEED
+ #       time_hovering = config.TIME_SLOT_DURATION - time_moving
+ #       fly_energy = config.POWER_MOVE * time_moving + config.POWER_HOVER * time_hovering
+
+        # 累加飞行能耗
+ #       self.total_fly_energy += fly_energy
+ #       self._energy_current_slot += fly_energy
+
+ #      has_energy_request = any(ue.current_request[0] == 2 for ue in self._current_covered_ues)
+ #       if has_energy_request:
+ #           wpt_energy = config.WPT_TRANSMIT_POWER * config.TIME_SLOT_DURATION
+ #           self.total_wpt_tx_energy += wpt_energy
+ #           self._energy_current_slot += wpt_energy
+
+
+        # self._energy_current_slot += fly_energy
+        # has_energy_request = any(ue.current_request[0] == 2 for ue in self._current_covered_ues)
+        # if has_energy_request:
+        #    self._energy_current_slot += config.WPT_TRANSMIT_POWER * config.TIME_SLOT_DURATION
+
     def update_energy_consumption(self) -> None:
-        """Update UAV energy consumption for the current time slot."""
         time_moving = self._dist_moved / config.UAV_SPEED
         time_hovering = config.TIME_SLOT_DURATION - time_moving
         fly_energy = config.POWER_MOVE * time_moving + config.POWER_HOVER * time_hovering
+
+        # 累加飞行能耗
+        self.total_fly_energy += fly_energy
         self._energy_current_slot += fly_energy
+
         has_energy_request = any(ue.current_request[0] == 2 for ue in self._current_covered_ues)
         if has_energy_request:
-            self._energy_current_slot += config.WPT_TRANSMIT_POWER * config.TIME_SLOT_DURATION
+            wpt_energy = config.WPT_TRANSMIT_POWER * config.TIME_SLOT_DURATION
+            self.total_wpt_tx_energy += wpt_energy
+            self._energy_current_slot += wpt_energy

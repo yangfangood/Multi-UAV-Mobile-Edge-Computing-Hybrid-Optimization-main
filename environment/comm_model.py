@@ -8,24 +8,26 @@ import math
 #    distance_sq: float = np.sum((pos1 - pos2) ** 2) # 计算距离平方
 #    return (config.G_CONSTS_PRODUCT) / (distance_sq + config.EPSILON)
 def calculate_channel_gain(uav_pos: np.ndarray, ue_pos: np.ndarray) -> float:
-    """Calculates channel gain using a probabilistic G2A path loss model."""
-    # 1. 计算距离和仰角
-    horizontal_dist = np.linalg.norm(uav_pos[:2] - ue_pos[:2])
+    # 1. 计算距离和仰角，保证 distance > 0
+    horizontal_dist = max(np.linalg.norm(uav_pos[:2] - ue_pos[:2]), 1e-9)
     vertical_dist = abs(uav_pos[2] - ue_pos[2])
-    distance = np.linalg.norm(uav_pos - ue_pos)
+    distance = max(np.linalg.norm(uav_pos - ue_pos), 1e-9)
     elevation_angle = math.atan2(vertical_dist, horizontal_dist) * 180 / math.pi
 
     # 2. 计算视距传输概率
-    # 这里的公式是一个示例，你需要根据参考文献选择适合你场景的模型
     p_los = 1 / (1 + config.LOS_A * math.exp(-config.LOS_B * (elevation_angle - config.LOS_A)))
     p_nlos = 1 - p_los
 
+    # 定义安全的 log10 函数
+    def safe_log10(x):
+        return math.log10(max(x, 1e-9))
+
     # 3. 计算两种状态下的路径损耗 (dB)
-    path_loss_los_db = (10 * config.PATH_LOSS_EXP_LOS * math.log10(distance) +
-                        20 * math.log10((4 * math.pi * distance * config.CARRIER_FREQUENCY) / 3e8) +
+    path_loss_los_db = (10 * config.PATH_LOSS_EXP_LOS * safe_log10(distance) +
+                        20 * safe_log10((4 * math.pi * distance * config.CARRIER_FREQUENCY) / 3e8) +
                         config.ETA_LOS)
-    path_loss_nlos_db = (10 * config.PATH_LOSS_EXP_NLOS * math.log10(distance) +
-                         20 * math.log10((4 * math.pi * distance * config.CARRIER_FREQUENCY) / 3e8) +
+    path_loss_nlos_db = (10 * config.PATH_LOSS_EXP_NLOS * safe_log10(distance) +
+                         20 * safe_log10((4 * math.pi * distance * config.CARRIER_FREQUENCY) / 3e8) +
                          config.ETA_NLOS)
 
     # 4. 加权平均得到最终的路径损耗

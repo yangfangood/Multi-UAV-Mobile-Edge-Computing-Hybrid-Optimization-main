@@ -56,6 +56,21 @@ def start_training(args: argparse.Namespace):
     else:  # "random"
         train_random(env, model, logger, args.num_episodes)
 
+    # ========== 在这里添加能耗统计 ==========
+    # 假设环境对象 env 中有 uavs 列表
+    total_fly = sum(u.total_fly_energy for u in env.uavs)
+    total_wpt = sum(u.total_wpt_tx_energy for u in env.uavs)
+    total_compute = sum(u.total_compute_energy for u in env.uavs)
+    total_energy = total_fly + total_wpt + total_compute
+
+    print("\n========== Energy Breakdown ==========")
+    print(f"Flight+Hover  : {total_fly:.2e} J ({total_fly / total_energy * 100:.1f}%)")
+    print(f"WPT Transmit  : {total_wpt:.2e} J ({total_wpt / total_energy * 100:.1f}%)")
+    print(f"Compute       : {total_compute:.2e} J ({total_compute / total_energy * 100:.1f}%)")
+    print(f"Total         : {total_energy:.2e} J")
+    print("=======================================")
+
+
     print("✅ Training Completed!\n")
     print("📊 Generating plots...")
 
